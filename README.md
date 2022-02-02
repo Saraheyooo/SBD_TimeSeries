@@ -23,6 +23,7 @@ For the individual assignment, your data need to meet the following requirements
 The outcome variable is the total power load of electricity (unit: MW) per day in Taiwan. The data is daily measured and already aggregate the all records of power systems from different regions in Taiwan from 2017-01-01 to 2021-05-22, with 1603 observations. The data is provides by Taipower, the state-owned company which provides electricity to support the whole national energy demand, including both the public's quality of life and the economic development. 
 
 The predictors: 
+
 (1) `Temperature` (unit: Celsius degrees) -> When the temperature rise, especially over 28 Celsius degrees, people tend to turn on the air conditioners. The power usages of air conditioners could contribute significant increase of power load that highly relevant to the outcomes.
 
 (2) `PrecpHour` (unit: hour) -> The precipitation hour gives insights into the humidity, sunshine time and weather conditions of that day. The precipitation could influence the apparent temperature of body feeling and human activities that cause different purposes of power usage. for example, in raining day people tend to stay at home that increase the power consuming from lights and home electronics.
