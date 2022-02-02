@@ -1,0 +1,411 @@
+---
+title: "Individual assignment SBD"
+author: "Sarah Hsu"
+date: "ADS, 2021-2022"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: yes
+    toc_depth: '5'
+  html_document:
+    highlight: default
+    theme: paper
+    toc: yes
+    toc_float: yes
+  word_document:
+    toc: yes
+    toc_depth: '5'
+fontsize: 12pt
+urlcolor: blue
+mainfont: Arial
+---
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+
+# 0. Prepare
+
+$\blacktriangleright$ Load the R-packages you will use.
+
+```{r messages=FALSE}
+library(fpp3)
+library(tseries)
+library(expsmooth)
+library(dplyr)
+library(tsibble)
+library(lubridate)
+require(ggfortify)
+library(imputeTS)
+library(CausalImpact)
+library(bsts)
+library(httr)
+library(dplyr)
+library(ggplot2)
+library(jsonlite)
+library(MASS)
+library(fastDummies)
+```
+
+
+$\blacktriangleright$ Include R-code you used to load (and prepare) the data.
+```{r}
+# Taiwan's weather data from 2017-1-1 to 2021-5-23
+weather<- read.csv('/Users/xutingxuan/Downloads/energy/weatherData_20170101-20210522.csv')
+weather$ObsTime <- as.Date(weather$ObsTime, format = "%Y-%m-%d")
+weather <- aggregate(weather, by=list(weather$ObsTime), FUN=mean)
+weather <- dplyr::select(weather, ObsTime, Temperature, PrecpHour)
+weather <- as_tsibble(weather, index = ObsTime)
+head(weather)
+```
+
+
+```{r}
+# Taiwan's holiday data from 2017-01-01 to 2021-12-31
+holiday<-read.csv('/Users/xutingxuan/Downloads/energy/holiday.csv')
+holiday <- dplyr::select(holiday, date, holiday_Type)
+holiday$date <- as.Date(holiday$date, format = "%Y-%m-%d")
+holiday$holiday_Type[holiday$holiday_Type == "regular"] <- 0
+holiday$holiday_Type[holiday$holiday_Type == "weekend"] <- 1
+holiday$holiday_Type[holiday$holiday_Type == "National holiday"] <- 2
+head(holiday)
+```
+
+
+```{r}
+# Taiwan's power load data from 2017-1-1 to 2021-5-22
+power<- read.csv('/Users/xutingxuan/Downloads/energy/loadpower_20170101-20210522.csv')
+power$datetime <- as.Date(power$datetime, format = "%Y-%m-%d")
+power <- as_tsibble(power, index = datetime)
+head(power)
+```
+
+
+```{r}
+#combine the power load and the predictors
+data <- merge(power, weather, by.x = "datetime", by.y = "ObsTime")
+data <- merge(data, holiday, by.x = "datetime", by.y = "date")
+data <- data %>% dplyr::select(datetime, load, Temperature, PrecpHour, holiday_Type) %>% as_tsibble(index=datetime)
+data$Temperature <- na_seadec(data$Temperature)
+data$PrecpHour <- na_seadec(data$PrecpHour)
+head(data)
+```
+
+
+
+# 1. General
+
+$\blacktriangleright$ To be able to use fpp3, the data have to be a tsibble object. If they aren't already, transform them. Describe the structure of this object.
+
+A tsibble object provides a tidy data based on time points to do analysis. The index column is `datetime` which involves the time stamps. Each observation is able to be uniquely identified by index and key in a regularly-spaced tsibble.
+
+
+## 1.1. Describe your data
+
+Start with answering the following questions:
+
+$\blacktriangleright$ What is your outcome variable; how was it measured (how many times, how frequently, etc.)?
+
+The outcome variable is the total power load of electricity (unit: MW) per day in Taiwan. The data is daily measured and already aggregate the all records of power systems from different regions in Taiwan from 2017-01-01 to 2021-05-22, with 1603 observations. The data is provides by Taipower, the state-owned company which provides electricity to support the whole national energy demand, including both the public's quality of life and the economic development. 
+
+
+
+$\blacktriangleright$ What are the predictor variable(s) you will consider? Why would this make sense as a predictor? 
+
+The three predictors: 
+
+(1) `Temperature` (unit: Celsius degrees) -> When the temperature rise, especially over 28 Celsius degrees, people tend to turn on the air conditioners. The power usages of air conditioners could contribute significant increase of power load that highly relevant to the outcomes.
+
+(2) `PrecpHour` (unit: hour) -> The precipitation hour gives insights into the humidity, sunshine time and weather conditions of that day. The precipitation could influence the apparent temperature of body feeling and human activities that cause different purposes of power usage. for example, in raining day people tend to stay at home that increase the power consuming from lights and home electronics.
+
+(3) `Holiday_Type`-> The holiday includes weekday(0) from Monday to Friday; holiday(1) is Saturday and Sunday; national holiday(2) is the non-working day declared by Taiwan government. Because the majority of power consuming are from business-purpose activities and industries sectors, working hours cause notable electricity consuming compared to holidays.
+
+
+
+$\blacktriangleright$ What are the cause(s) you will consider? Why would this make sense as a cause?
+
+The national economic structure of business sectors would be a long term cause to Taiwanese power demand. Around 53% of Taiwan's power consuming is from industrial purposes in 2018, especially in semiconductor industry which also contribute the major gross of Taiwan's GDP. However, the power demand of Taiwan's IT industry has increased twice as much as the usages from 2018 to 2020. The ever-growing IT industry has become the most important business sector of Taiwan's strength and a significant cause of overall power load.
+
+
+
+## 1.2. Visualize your data
+$\blacktriangleright$ Create a sequence plot of the data with the function autoplot(). Interpret the results.
+```{r}
+autoplot(power)
+```
+
+There are clear trends over time. The power load decreases in winter followed by a significantly increase in summer and reach peaks at June or July. At a shorter timescale, it also indicates a seasonal pattern (i.e. an annual period). Therefore, these data are obviously not stationary.
+
+
+
+$\blacktriangleright$ Plot the autocorrelation function with the function acf(). Interpret the results.
+
+```{r}
+acf(power)
+```
+The ACF demonstrates the autocorrelations fluctuate with a term and stay quite high for a long time even over larger lags. Additionally, there is a peak at lags 7, 14, 21 and 28, which indicate there are sequential dependencies and contain seasonal effects in the data. These match the facts that there are obvious trends in the sequence plot.
+
+
+
+$\blacktriangleright$ Based on (basic) content knowledge about the variable, and these visualizations, is there reason to assume the data are non-stationary and/or that there is a seasonal component?
+
+Based on basic content knowledge about the power load is supposed to have correlations to weather that involving seasonal effect. In the sequence plot, we can discover there is a annual trend which is agree with our idea. Moreover, the ACF visualizes a regular pattern and significant sequential dependencies at particular lags that means there is a structure in the data and not a white noise. Overall, we can conclude the data are non-stationary and there is a seasonal component.
+
+
+
+# 2. Forecasting
+
+## 2.1. SARIMA modeling
+
+$\blacktriangleright$ Perform the Dickey-Fuller test. What is your conclusion?
+```{r}
+adf.test(power$datetime)
+```
+The Dickey-Fuller test is non-significant with p-value > 0.05 which means the null hypothesis (a unit root process) is not rejected and the data is non-stationarity. The result is in agreement with our conclusion based on the visualization of ACF above.
+
+
+
+$\blacktriangleright$ Fit an (S)ARIMA model to the data; what is the order of the model that was selected? 
+
+```{r}
+# split the data into train and test set
+train1 <- filter(power, datetime < "2020-01-01")
+test1 <- filter(power, datetime >= "2020-01-01")
+```
+
+```{r}
+fit1 <- train1 %>% model(ARIMA(load)) 
+report(fit1)  
+```
+We get an `ARIMA(1,0,3)(2,1,0)[7]` model. The seasonal period is 7 that also indicates a week-pattern lagged effect that make sense due to the daily data, and the model is based on seasonal differencing (D=7). Then the AR and MA orders are p=1 and q=3 , and the seasonal AR and MA orders are P=2 and Q=0.
+
+
+
+$\blacktriangleright$ Check the residuals of the model using the function gg_tsresiduals(). What is your conclusion?
+
+```{r}
+gg_tsresiduals(fit1) 
+```
+
+1) The residuals do not show any obvious trend anymore and seems as stationary that the mean and variance seem to be constant over time.
+
+2) The ACF shows there are still notable autocorrelations in lag-14 and 21 but most of the autocorrelations are closed to zero. The strong correlations in lag 14 and 21 that we can imply there is a week-pattern in the daily measured data.
+
+3) The histogram of residuals is symmetric and like a normal distribution. It indicates the SARIMA model is fair and we don't need to transform the data. If we extract the residuals and do a Dickey-Fuller test as below, the test is significant. Hence, we can reject the H0 and conclude the residuals are stationary. 
+```{r}
+adf.test(augment(fit1)$.resid)
+```
+
+
+
+## 2.2. Dynamic regression 
+$\blacktriangleright$ Include the predictor in an dynamic regression model (i.e., allow for (S)ARIMA residuals); what is the effect of the predictor? 
+
+```{r}
+# split the data into train and test.
+train2 <- filter(data, datetime < "2020-01-01")
+test2 <- filter(data, datetime >= "2020-01-01")
+test2["load"] <- NA
+```
+
+```{r}
+fit2 <- train2 %>% model(ARIMA(load ~ Temperature + PrecpHour+ holiday_Type))
+report(fit2)
+```
+
+The regression with predictors help SARIMA take the seasonal effect into account. In view of our data having a seasonal trend, the predictors with time cycle not only deal with the seasonal dependencies but also make the model fit reality that improve the accuracy of prediction. SARIMA with perdictors: `AICc=9544.17`, compare to SARIMA without perdictor: `AICc=9915.64`.
+
+
+
+$\blacktriangleright$ What order is the (S)ARIMA model for the residuals?  
+
+We get an `ARIMA(1,0,0)(2,0,0)[7] errors`. The seasonal period is 7 that also indicate a week-pattern lagged effect, and without seasonal differencing (D=0). Then the AR and MA orders are p=1 and q=0 , and the seasonal AR and MA orders are P=2 and Q=0.
+
+
+
+$\blacktriangleright$ Check the residuals of the model using the function gg_tsresiduals(). What is your conclusion?
+
+```{r}
+gg_tsresiduals(fit2) 
+```
+
+1) The residuals do not show any obvious trend anymore and seems as stationary that the mean and variance seem to be constant over time.
+
+2) The ACF shows there are notable autocorrelations in lag-6 and 14 but most of the autocorrelations are close to zero. The sequential dependencies in specific lagged correlations make `power load` predictable from preceding observations.
+
+3) The histogram of residuals is symmetric and like a normal distribution. It indicates the SARIMA model id fair and we don't need to transform the data. If we extract the residuals and do a Dickey-Fuller test as below, the test is significant. Hence, we can reject the H0 and conclude the residuals are stationary. 
+
+```{r}
+adf.test(augment(fit2)$.resid)
+```
+
+
+## 2.3. Forecasts
+$\blacktriangleright$ Choose a forecasting horizon, and indicate why this is a reasonable and interesting horizon to consider. 
+
+
+Based on the visualizations above, it shows there is a annual trend in the data which is relevant to seasons every year. In this case, it would be a interesting to see the annual forecast and evaluate the power demand of the peak and off-peak loading month in the following year that is helpful for Taipower to plan for the load capacity in different seasons.
+Hence, I would like to choose a forecasting horizon of 365, that we can make forecasts for the next one year.
+
+For the evaluate the prediction, I split the data into training set with date from 2017-01-01 to 2019-12-31 and testing set from 2020-01-01 to 2021-05-22, that at least we can observe the forecast of a entire trend of 2020.
+
+
+
+$\blacktriangleright$ Create forecasts based on the model without the predictor and plot these.
+```{r}
+fit1 %>% forecast(h=365) %>% autoplot(train1) 
+```
+
+
+$\blacktriangleright$ Create forecasts based on the model with the predictor and plot these.
+
+```{r}
+# forecast compare with actual data
+forecast(fit2, new_data = test2) %>% autoplot(data) 
+```
+
+
+$\blacktriangleright$ Compare the plots of both forecasts (visually), and discuss how they are similar and/or different.
+
+Similar parts:
+
+Both of the SARIMA(fit1) and SARIMA with predictors(fit2) depict the pattern of working day vs holiday as we can see there is a similar width along the forecast line. That agree with the significant autocorrelation of lag 7 in the observed data.
+
+
+Different parts:
+
+The forecasts of SARIMA without predictor (fit1) seems to depict a straight line without predictable trend because the model does not take seasonal effect into account that the forecasts quickly become a constant. Additionally, the unit root and non-stationarity of the data cause the prediction intervals increases forward in time and the difficulties of forecasts.
+
+By contract, the forecasts of SARIMA with predictor (fit2) clearly depict a seasonal pattern over time. The prediction intervals also remain in a similar range across the time that make the forecasts much more reliable.
+
+
+In conclusion, the two models above demonstrate the importance of considering the predictors which is relevant to our outcome variable. The predictors with cycle effect not only can help the model explore the seasonal pattern over time but also improve the accuracy of prediction and make the results meet the real life conditions.
+
+```{r}
+accuracy(fit1)
+```
+
+```{r}
+accuracy(fit2)
+```
+We can see the accurracy of SARIMA with predictor (fit2) is better than SARIMA without predictor (fit1).
+
+
+
+
+# 3. Causal Modeling
+
+$\blacktriangleright$ Formulate a causal research question(s) involving the time series variable(s) you have measured.
+
+Research question: "Do the temperature affect the demand of electricity in Taiwan?"
+
+
+
+$\blacktriangleright$ Which method we learned about in class (Granger causal approaches, interrupted time series, synthetic controls) is most appropriate to answer your research question using the data you have available? Why?
+
+The resarch meets the two principles of Granger causality: 1) the weather conditions don't precede the cause in time. 2) the weather (causal time series) contains unique information (temperature) about the power laod (effect time series).
+
+In contract, it is hard to define a Taiwan's energy policy as the intervention to use interrupted time series, synthetic controls. Therefore, in this case, I reckon it is most appropriate to apply Granger causal approaches to answer the question.
+
+
+
+
+## 3.2 Analysis
+
+Depending on the choice you made above, follow the questions outlined in 3.2a, 3.2b or 3.2c. If you chose a Granger causal analysis, it is sufficient to assess Granger causality in one direction only: you may evaluate a reciprocal causal relationship, but then answer each question below for both models.
+
+### 3.2a Granger Causal analysis
+
+$\blacktriangleright$ Visualize your putative cause variable(s) $X$ and outcome variables $Y$.
+
+```{r}
+# cause variable: Temperature
+ts.plot(data$Temperature)
+```
+```{r}
+#outcome variable: power load of electricity
+ts.plot(data$load)
+```
+
+
+
+$\blacktriangleright$ Train an appropriate ARIMA model on your outcome variable(s) $Y$, ignoring the putative cause variable(s) ($X$) but including, if appropriate, any additional covariates. If using the same model as fit in part 2, briefly describe that model again here.
+
+```{r}
+# including additional covariates
+fit0 <- data %>%  model(ARIMA(load ~ PrecpHour + holiday_Type))
+report(fit0)
+```
+We get an `ARIMA(0,1,2)(2,0,0)[7] errors` with precipitation hour(`PrecpHour`) and holiday Type(`holiday_Type`) as covariates because based on the above analysis we conclude the precipitation and holiday have seasonal effects of the power load that can improve the forecasts.
+The model's seasonal period is 7 that indicates a week-pattern lagged effect, and without seasonal differencing (D=0). Then the AR and MA orders are p=1 and q=2, and the seasonal AR and MA orders are P=2 and Q=0.
+
+
+
+
+$\blacktriangleright$ Justify what range of lags to consider for the lagged predictor(s). Use the CCF, but you may also justify this based on domain knowledge or substantive theory. 
+
+```{r}
+xdiff <- diff(data$Temperature, lag=1)
+ydiff <- diff(data$load, lag = 1)
+
+ccf(xdiff, ydiff, ylab = "CCF")
+```
+
+In the CCF, we focus on the left on the x-axis that indicate the correlation between Y and lagged-X. There are strong lagged correlations of 1, 4 and 6 but the correlation at a lag of 8 is again very close to zero. Hence, I choose the maximum lagged predictor of 7 to analyze.
+
+
+
+$\blacktriangleright$ Investigate whether adding your lagged ``cause'' variables ($X$) improve the prediction of your effect variable(s) $Y$. Use model selection based on information criteria. Describe your final chosen model
+
+```{r}
+fit <-data %>%
+  # dropping the first six rows
+  mutate(load = c(NA, NA, NA, NA, NA, NA, load[7:1603])) %>%
+  # Estimate models
+  model(
+    indep = ARIMA(load),
+    lag1 = ARIMA(load~ lag(Temperature)),
+    lag2 = ARIMA(load~ lag(Temperature) + lag(Temperature,2)),
+    lag3 = ARIMA(load~ lag(Temperature) + lag(Temperature,2) + lag(Temperature,3)),
+    lag4 = ARIMA(load~ lag(Temperature) + lag(Temperature,2) + lag(Temperature,3) + lag(Temperature,4)),
+    lag5 = ARIMA(load~ lag(Temperature) + lag(Temperature,2) + lag(Temperature,3) + lag(Temperature,4) + lag(Temperature,5)),
+    lag6 = ARIMA(load~ lag(Temperature) + lag(Temperature,2) + lag(Temperature,3) + lag(Temperature,4) + lag(Temperature,5) + lag(Temperature,6))
+  )
+glance(fit)
+```
+```{r}
+plot(seq(0,6), glance(fit)$AICc, 
+     col = "orange", type = "b", 
+     ylab = "Information Criteria", xlab = "model", ylim = c(14330,14410))
+lines(seq(0,6), glance(fit)$BIC, col = "blue", type = "b")
+legend("topright", c("AICc","BIC"), col = c("orange","blue"), lty = 1)
+```
+```{r}
+# fit with 3 lag predictors
+fit_best_aic <- data %>% model(ARIMA(load ~ lag(Temperature) + lag(Temperature,2) + lag(Temperature,3)+ PrecpHour + holiday_Type))
+report(fit_best_aic)
+# fit with 1 lag predictor
+fit_best_bic <- data %>% model(ARIMA(load ~ lag(Temperature)+ PrecpHour + holiday_Type))
+report(fit_best_bic)
+```
+
+Based on the AICc and BIC of `glance(fit)`, I fit a lag-1 model and lag-3 model. However, The both are the same independence model `ARIMA(2,1,0)(2,0,0)[7]`. Comparing the results shown above, my final model including covariates is ARIMA(2,1,0)(2,0,0)[7] with lag-3 predictor which has the lower AICc.
+
+
+
+
+## 3.3 Conclusion and critical reflection
+
+$\blacktriangleright$ Based on the result of your analysis, how would you answer your causal research question?
+
+Based on overall analysis, we find past values of temperature help in predicting future values of power load. We can say that temperature is a granger cause of power demand. However, we lack all information in the universe to forward prediction in Granger causality, so we can only make inferences about the causality. In this viewpoint, we conclude that temperature is a prima facie cause of Taiwan's electricity demand. 
+
+
+
+$\blacktriangleright$ Making causal conclusions on the basis of your analysis is reliant on a number of assumptions. Pick a single assumption that is necessary in the approach you chose. Discuss the plausability and possible threats to the validity of this assumption in your specific setting (< 75 words)
+
+In reality, it is impossible to include the all information in the universe to Granger causality, so it is necessary to assume there is no unobserved confounding (sufficiency) in the research. If there is an unobserved confounding, it is hard to conclude the justified cause-and-effect relationship between electricity demand and temperature.
+
+Given the assumption of no unobserved confounding, we can predict the power demand based on the historical temperature data. It is useful for Taipower to optimize their loading power and work efficiently on account of the temperature information. 
+
+---
