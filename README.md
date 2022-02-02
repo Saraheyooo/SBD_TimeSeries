@@ -30,3 +30,5 @@ The predictors:
 
 (3) `Holiday_Type`-> The holiday includes weekday(0) from Monday to Friday; holiday(1) is Saturday and Sunday; national holiday(2) is the non-working day declared by Taiwan government. Because the majority of power consuming are from business-purpose activities and industries sectors, working hours cause notable electricity consuming compared to holidays. The holiday type is processed by the python code as the jupyter notebook.
 
+Data from kaggle:
+https://www.kaggle.com/patrick0302/taipower-eda/data
